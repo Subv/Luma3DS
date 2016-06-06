@@ -23,4 +23,5 @@ void patchFirmWrites(u8 *pos, u32 size);
 void patchFirmWriteSafe(u8 *pos, u32 size);
 void reimplementSvcBackdoor(u8 *pos, u32 size);
 void applyLegacyFirmPatches(u8 *pos, FirmwareType firmType, u32 isN3DS);
+void patchServiceAccessCheck(u8 *pos, u32 size);
 u32 getLoader(u8 *pos, u32 *loaderSize);

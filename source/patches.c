@@ -4,8 +4,12 @@
 
 #include "patches.h"
 #include "memory.h"
+#include "cache.h"
 #include "config.h"
+#include "fs.h"
 #include "../build/rebootpatch.h"
+#include "../build/smpatch.h"
+#include "tinyprintf/tinyprintf.h"
 
 u8 *getProcess9(u8 *pos, u32 size, u32 *process9Size, u32 *process9MemAddr)
 {
@@ -109,6 +113,70 @@ void reimplementSvcBackdoor(u8 *pos, u32 size)
         memcpy(freeSpace, svcBackdoor, 40);
 
         svcTable[0x7B] = 0xFFFF0000 + ((u8 *)freeSpace - (u8 *)exceptionsPage);
+    }
+}
+
+void patchServiceAccessCheck(u8 *pos, u32 size)
+{
+    // Create a codecave in the empty padding space after the kernel
+    // This codecave will patch the sm module after it is decompressed
+
+    // Find some padding space to add our code
+    const u8 bogus_pattern[] = {0x1E, 0xFF, 0x2F, 0xE1, 0x1E, 0xFF, 0x2F, 0xE1, 0x1E, 0xFF, 
+  0x2F, 0xE1, 0x00, 0x10, 0xA0, 0xE3, 0x00, 0x10, 0xC0, 0xE5, 
+  0x1E, 0xFF, 0x2F, 0xE1};
+    
+    u32 *someSpace = (u32 *)memsearch(pos, bogus_pattern, size, 24);
+
+    u32 *freeSpace;
+    for(freeSpace = someSpace; *freeSpace != 0xFFFFFFFF; freeSpace++);
+
+    if (freeSpace != NULL) {
+        // Inject the codecave
+        memcpy(freeSpace, sm, sm_size);
+    } else {
+        if (freeSpace != NULL)
+            fileWrite("NotFoundP", "patch.log", 9);
+        else
+            fileWrite("NotFoundS", "patch.log", 9);
+        return;
+    }
+
+    // Patch the built-in module loading code to jump to our codecave
+    // Find the code that decompresses the .code section
+    const u8 pattern[] = {0x00, 0x00, 0x94, 0xE5, 0x18, 0x10, 0x90, 0xE5, 0x28, 0x20, 
+                          0x90, 0xE5, 0x48, 0x00, 0x9D, 0xE5};
+
+    u8 *off = memsearch(pos, pattern, size, 16);
+
+    if (off != NULL) {
+        char buff[100];
+        tfp_snprintf(buff, 100, "%08X - %08X", (u32)freeSpace, (u32)off);
+        fileWrite(buff, "patch.log", 19);
+
+        tfp_snprintf(buff, 100, "%08X", (u32)pos);
+        fileWrite(buff, "base.log", 8);
+
+        // Inject a jump instruction to our codecave at off
+        // Construct a jump instruction to our codecave
+        u32 offset = ((((u32)freeSpace) - ((u32)off + 8)) >> 2) & 0xFFFFFF;
+        u32 instruction = offset | (1 << 24) | (0x5 << 25) | (0xE << 28);
+
+        u32* to_patch = (u32*)off;
+        u32 previous = *to_patch;
+        *to_patch = instruction;
+
+        tfp_snprintf(buff, 100, "%08X - %08X - %08X - %08X", (u32)offset, (u32)instruction, previous, *to_patch);
+        fileWrite(buff, "instr.log", 41);
+
+        // Clear the data cache
+        flushEntireDCache();
+        flushEntireICache();
+
+        fileWrite(pos, "firmware_11x4.bin", size);
+    } else {
+        fileWrite("NotFound", "patch.log", 8);
+        return;
     }
 }
 
